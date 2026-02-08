@@ -1,15 +1,1 @@
-version: '3.8'
-services:
-  app:
-    image: your-image-name
-    ports:
-      - '80:80'
-    environment:
-      - ENV_VAR_NAME=value
-    volumes:
-      - ./data:/data
-    networks:
-      - app-network
-networks:
-  app-network:
-    driver: bridge
+
