@@ -1,13 +1,19 @@
-//meet-bot.js
+// meet-bot.js
 
-function saveTranscriptToSheet(transcript) {
-  var sheet = SpreadsheetApp.openById('<YOUR_SPREADSHEET_ID>').getActiveSheet();
-  sheet.appendRow([new Date(), transcript]);
+/**
+ * This Google Apps Script integrates with Google Sheets to save transcripts in real time.
+ */
+
+function saveTranscript(transcript) {
+  const sheetId = "YOUR_SHEET_ID_HERE"; // Replace with your Google Sheet ID
+  const sheet = SpreadsheetApp.openById(sheetId).getActiveSheet();
+  const timestamp = new Date().toISOString(); // Get current time
+
+  // Append the transcript along with the timestamp to the spreadsheet
+  sheet.appendRow([timestamp, transcript]);
 }
 
-function onMeetingTranscriptReceived(transcript) {
-  saveTranscriptToSheet(transcript);
-  // Additional logic for handling the transcript
+// Example usage
+function onTranscriptReceived(transcript) {
+  saveTranscript(transcript);
 }
-
-// Example usage: onMeetingTranscriptReceived('This is a sample transcript.');
