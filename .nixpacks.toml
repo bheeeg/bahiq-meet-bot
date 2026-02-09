@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["...", "chromium"]
+
+[phases.install]
+cmds = ["npm ci --legacy-peer-deps"]
+
+[phases.build]
+cmds = ["echo 'No build needed'"]
+
+[start]
+cmd = "npm start"
