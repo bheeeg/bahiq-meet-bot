@@ -2,243 +2,220 @@ const puppeteer = require('puppeteer-core');
 const chromium = require('@sparticuz/chromium');
 const express = require('express');
 const cors = require('cors');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
 
 const activeBots = new Map();
 
-app.get('/', (req, res) => {
-  res.json({
-    status: 'running',
-    service: 'بوت بهيج DIY Meet - النسخة المحسّنة',
-    version: '3.0.0 VERIFICATION',
-    activeBots: activeBots.size
-  });
-});
+// 🧠 Gemini AI
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+let genAI = null;
 
-// 🔍 دالة فحص محسّنة: هل دخلنا الاجتماع؟
-async function isInMeeting(page) {
+if (GEMINI_API_KEY) {
+  genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
+  console.log('✅ Gemini AI جاهز');
+} else {
+  console.warn('⚠️ GEMINI_API_KEY غير موجود');
+}
+
+// 🍪 Cookies
+let savedCookies = null;
+const BOT_COOKIES = process.env.BOT_COOKIES;
+
+if (BOT_COOKIES) {
   try {
-    const url = page.url();
-    console.log(`🔍 URL الحالي: ${url}`);
-    
-    // ❌ لو في landing أو waiting → أكيد ما دخلنا
-    if (url.includes('/landing') || url.includes('/waiting')) {
-      console.log('❌ ما زلنا في صفحة الانتظار');
-      return false;
-    }
-    
-    // تحقق من وجود "Ask to join" → معناها ما دخلنا
-    const askToJoin = await page.$('span:contains("Ask to join"), span:contains("اطلب الانضمام")');
-    if (askToJoin) {
-      console.log('❌ ما زال في زر "Ask to join"');
-      return false;
-    }
-    
-    // علامات قوية إننا داخل:
-    const checks = await page.evaluate(() => {
-      // 1. زر "Leave call"
-      const leaveBtn = document.querySelector('[aria-label*="Leave call" i], [aria-label*="مغادرة" i]');
-      
-      // 2. عداد الوقت
-      const timer = document.querySelector('[role="timer"]');
-      
-      // 3. أيقونات التحكم (mic, camera)
-      const controlBar = document.querySelector('[data-participant-id], [data-self-name]');
-      
-      // 4. نص "You're in the meeting"
-      const bodyText = document.body.innerText.toLowerCase();
-      const inMeeting = bodyText.includes('you\'re in') || bodyText.includes('meeting') && bodyText.includes('participant');
-      
-      // 5. عدم وجود "Ready to join"
-      const readyToJoin = bodyText.includes('ready to join') || bodyText.includes('جاهز للانضمام');
-      
-      return {
-        hasLeaveBtn: !!leaveBtn,
-        hasTimer: !!timer,
-        hasControlBar: !!controlBar,
-        inMeetingText: inMeeting,
-        notReady: !readyToJoin,
-        bodySnippet: bodyText.substring(0, 200)
-      };
-    });
-    
-    console.log('📊 نتائج الفحص:', JSON.stringify(checks, null, 2));
-    
-    // يجب أن يتحقق شرطين على الأقل
-    const score = [
-      checks.hasLeaveBtn,
-      checks.hasTimer,
-      checks.hasControlBar,
-      checks.inMeetingText,
-      checks.notReady
-    ].filter(Boolean).length;
-    
-    console.log(`📈 نقاط التأكيد: ${score}/5`);
-    
-    if (score >= 2) {
-      console.log('✅ يبدو إننا دخلنا فعلاً!');
-      return true;
-    }
-    
-    return false;
-    
+    savedCookies = JSON.parse(BOT_COOKIES);
+    console.log('✅ تم تحميل', savedCookies.length, 'cookie من Environment');
   } catch (e) {
-    console.log('⚠️ خطأ في الفحص:', e.message);
-    return false;
+    console.error('❌ فشل تحميل Cookies:', e.message);
   }
 }
 
-// 📸 دالة أخذ سكرينشوت
-async function takeScreenshot(page, botId) {
+// 🏠 الصفحة الرئيسية
+app.get('/', (req, res) => {
+  res.json({
+    status: 'running',
+    service: '🤖 Bahiq AI Agent - Meet Bot',
+    version: '6.0.0',
+    activeBots: activeBots.size,
+    features: {
+      hasCookies: !!savedCookies,
+      hasGemini: !!genAI,
+      cookiesCount: savedCookies ? savedCookies.length : 0
+    }
+  });
+});
+
+// 🧠 تحليل النصوص بـ Gemini
+async function analyzeWithGemini(transcripts) {
+  if (!genAI || transcripts.length === 0) {
+    return null;
+  }
+
   try {
-    const screenshot = await page.screenshot({ 
-      encoding: 'base64',
-      type: 'jpeg',
-      quality: 60
-    });
-    return `data:image/jpeg;base64,${screenshot}`;
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash-exp' });
+    
+    const allText = transcripts.map(t => `[${t.time}] ${t.text}`).join('\n');
+    
+    const prompt = `أنت AI Agent محترف في تحليل الاجتماعات.
+
+نص الاجتماع:
+${allText}
+
+اكتب تحليل شامل يحتوي على:
+1. **ملخص عام** (3-5 جمل)
+2. **النقاط الرئيسية** (قائمة مرقمة)
+3. **القرارات المتخذة** (إن وجدت)
+4. **المهام والإجراءات** (من سيفعل ماذا)
+
+أرجع النتيجة بصيغة JSON فقط:
+{
+  "summary": "النص هنا",
+  "keyPoints": ["نقطة 1", "نقطة 2"],
+  "decisions": ["قرار 1"],
+  "actionItems": [{"person": "الاسم", "task": "المهمة"}]
+}`;
+
+    const result = await model.generateContent(prompt);
+    const response = result.response.text();
+    
+    // استخراج JSON
+    const jsonMatch = response.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    
+    return { summary: response, keyPoints: [], decisions: [], actionItems: [] };
+    
   } catch (e) {
-    console.log('⚠️ فشل السكرينشوت:', e.message);
+    console.error('❌ Gemini error:', e.message);
     return null;
   }
 }
 
-// 💣 دالة الهجوم الشامل (محسّنة)
-async function bruteForceJoin(page, botName, botId, maxAttempts = 40) {
-  console.log('🔥 بدء الهجوم الشامل للدخول...');
+// 🔍 تحقق: دخلنا الاجتماع؟
+async function isInMeeting(page) {
+  try {
+    const checks = await page.evaluate(() => {
+      const leave = document.querySelector('[aria-label*="Leave" i], [aria-label*="مغادرة" i]');
+      const timer = document.querySelector('[role="timer"]');
+      const body = document.body.innerText.toLowerCase();
+      
+      return {
+        hasLeave: !!leave,
+        hasTimer: !!timer,
+        noAsk: !body.includes('ask to join'),
+        noReady: !body.includes('ready to join')
+      };
+    });
+    
+    const score = Object.values(checks).filter(Boolean).length;
+    console.log(`📊 نقاط الدخول: ${score}/4`);
+    
+    return score >= 2;
+  } catch (e) {
+    return false;
+  }
+}
+
+// 🚪 محاولة الدخول
+async function attemptJoin(page, maxAttempts = 25) {
+  console.log('🚪 بدء محاولات الدخول...');
   
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    console.log(`\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     console.log(`🎯 المحاولة ${attempt}/${maxAttempts}`);
-    console.log(`━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`);
     
-    // تحقق: دخلنا؟
-    const joined = await isInMeeting(page);
-    if (joined) {
-      console.log('✅✅✅ تأكدت 100%: دخلنا الاجتماع! ✅✅✅');
-      
-      // خذ سكرينشوت للتأكيد
-      const screenshot = await takeScreenshot(page, botId);
-      
-      // حفظ حالة "منتظر التأكيد"
-      const bot = activeBots.get(botId);
-      if (bot) {
-        bot.status = 'waiting_confirmation';
-        bot.screenshot = screenshot;
-        bot.joinedAt = new Date().toISOString();
-      }
-      
-      return { success: true, screenshot };
+    if (await isInMeeting(page)) {
+      console.log('✅✅✅ دخلنا الاجتماع! ✅✅✅');
+      return true;
     }
     
     try {
-      // ═══════════════════════════════════════
-      // 🔍 الطريقة 1: البحث عن "Ask to join" تحديداً
-      // ═══════════════════════════════════════
-      const askButtons = await page.$x("//span[contains(., 'Ask to join') or contains(., 'اطلب')]");
-      if (askButtons.length > 0) {
-        console.log(`✅ وجدت زر "Ask to join"!`);
-        await askButtons[0].click();
+      // محاولة 1: ابحث عن "Join now"
+      const joinButtons = await page.$x("//span[contains(., 'Join now') or contains(., 'انضم الآن') or contains(., 'Join') or contains(., 'انضم')]");
+      
+      if (joinButtons.length > 0) {
+        console.log('✅ وجدت زر الانضمام');
+        await joinButtons[0].click();
         await page.waitForTimeout(4000);
         continue;
       }
       
-      // ═══════════════════════════════════════
-      // 🔍 الطريقة 2: jsname
-      // ═══════════════════════════════════════
-      const jsnameBtn = await page.$('span[jsname="V67aGc"]');
-      if (jsnameBtn) {
-        const text = await jsnameBtn.evaluate(e => e.textContent);
-        console.log(`✅ وجدت jsname: "${text}"`);
-        await jsnameBtn.click();
-        await page.waitForTimeout(3000);
-        continue;
-      }
-      
-      // ═══════════════════════════════════════
-      // 🔍 الطريقة 3: مسح كل الأزرار
-      // ═══════════════════════════════════════
+      // محاولة 2: أي button فيه كلمة join
       const allButtons = await page.$$('button, div[role="button"], span[role="button"]');
-      console.log(`📊 عدد الأزرار: ${allButtons.length}`);
       
-      for (let i = 0; i < Math.min(allButtons.length, 20); i++) {
-        try {
-          const btn = allButtons[i];
-          const text = await btn.evaluate(e => e.textContent?.trim().toLowerCase() || '');
-          const ariaLabel = await btn.evaluate(e => e.getAttribute('aria-label')?.toLowerCase() || '');
-          
-          const combined = text + ' ' + ariaLabel;
-          
-          const joinWords = ['ask to join', 'join now', 'انضم', 'اطلب', 'دخول'];
-          const shouldClick = joinWords.some(w => combined.includes(w));
-          
-          if (shouldClick && text.length < 50) {
-            console.log(`🎯 أضغط على: "${text.substring(0, 40)}"`);
-            await btn.click();
-            await page.waitForTimeout(3000);
-            break;
-          }
-        } catch (e) {}
+      for (let i = 0; i < Math.min(allButtons.length, 15); i++) {
+        const btn = allButtons[i];
+        const text = await btn.evaluate(e => e.textContent?.toLowerCase() || '');
+        
+        if ((text.includes('join') || text.includes('انضم')) && text.length < 50) {
+          console.log(`🎯 محاولة: "${text.substring(0, 30)}"`);
+          await btn.click();
+          await page.waitForTimeout(3000);
+          break;
+        }
       }
       
-      // ═══════════════════════════════════════
-      // 🔍 الطريقة 4: Enter
-      // ═══════════════════════════════════════
-      if (attempt % 8 === 0) {
+      // محاولة 3: Enter
+      if (attempt % 6 === 0) {
         console.log('⌨️ محاولة Enter...');
         await page.keyboard.press('Enter');
         await page.waitForTimeout(2000);
-      }
-      
-      // ═══════════════════════════════════════
-      // 🔍 الطريقة 5: JS Injection
-      // ═══════════════════════════════════════
-      if (attempt % 12 === 0) {
-        console.log('💉 JS Injection...');
-        await page.evaluate(() => {
-          const all = document.querySelectorAll('*');
-          for (const el of all) {
-            const txt = el.textContent?.toLowerCase() || '';
-            if ((txt.includes('ask to join') || txt.includes('join now')) && txt.length < 50) {
-              el.click();
-              break;
-            }
-          }
-        });
-        await page.waitForTimeout(3000);
       }
       
     } catch (e) {
       console.log(`⚠️ خطأ: ${e.message}`);
     }
     
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(2500);
   }
   
-  // فشل بعد كل المحاولات → خذ سكرينشوت للتشخيص
-  console.log('❌ فشلت كل المحاولات - أخذ سكرينشوت للتشخيص...');
-  const screenshot = await takeScreenshot(page, botId);
-  
-  return { success: false, screenshot };
+  console.log('❌ فشلت كل المحاولات');
+  return false;
 }
 
-// 🤖 إنشاء البوت
+// 📸 سكرينشوت
+async function takeScreenshot(page) {
+  try {
+    const screenshot = await page.screenshot({ 
+      encoding: 'base64',
+      type: 'jpeg',
+      quality: 50,
+      fullPage: false
+    });
+    return `data:image/jpeg;base64,${screenshot}`;
+  } catch (e) {
+    console.error('⚠️ فشل السكرينشوت:', e.message);
+    return null;
+  }
+}
+
+// 🤖 إنشاء AI Agent Bot
 app.post('/bot/create', async (req, res) => {
   try {
-    const { meeting_url, bot_name = 'تالي - بوت بهيج' } = req.body;
+    const { meeting_url, bot_name = 'Tali AI Agent 🤖' } = req.body;
     
     if (!meeting_url) {
       return res.status(400).json({ error: 'meeting_url مطلوب' });
     }
     
-    console.log('\n\n🤖 إنشاء بوت جديد...');
+    if (!savedCookies) {
+      return res.status(400).json({ 
+        error: 'Cookies غير موجودة',
+        hint: 'أضف BOT_COOKIES في Railway Environment Variables'
+      });
+    }
+    
+    console.log('\n\n🤖 ═══════════════════════════════');
+    console.log('🤖 إنشاء AI Agent Bot');
     console.log('📍 الرابط:', meeting_url);
     console.log('👤 الاسم:', bot_name);
-    
-    const execPath = await chromium.executablePath();
+    console.log('🍪 Cookies:', savedCookies.length);
+    console.log('🧠 Gemini:', genAI ? 'متاح ✅' : 'معطل ⚠️');
+    console.log('🤖 ═══════════════════════════════\n');
     
     const browser = await puppeteer.launch({
       args: chromium.args.concat([
@@ -246,37 +223,40 @@ app.post('/bot/create', async (req, res) => {
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--use-fake-ui-for-media-stream',
-        '--use-fake-device-for-media-stream'
+        '--use-fake-device-for-media-stream',
+        '--disable-blink-features=AutomationControlled'
       ]),
       defaultViewport: chromium.defaultViewport,
-      executablePath: execPath,
+      executablePath: await chromium.executablePath(),
       headless: chromium.headless
     });
     
     const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36');
     
     const context = browser.defaultBrowserContext();
     await context.overridePermissions(meeting_url, ['microphone', 'camera']);
     
+    // 🍪 تحميل Session
+    console.log('🍪 تحميل session...');
+    await page.setCookie(...savedCookies);
+    
     console.log('🌐 الدخول للصفحة...');
     await page.goto(meeting_url, { waitUntil: 'networkidle2', timeout: 60000 });
-    
     await page.waitForTimeout(5000);
     
-    // محاولة إدخال الاسم
+    // محاولة إدخال الاسم (لو طُلب)
     try {
       const nameInput = await page.$('input[type="text"]');
       if (nameInput) {
         await nameInput.click({ clickCount: 3 });
-        await nameInput.type(bot_name, { delay: 80 });
-        console.log('✅ أدخلت الاسم');
+        await nameInput.type(bot_name, { delay: 100 });
+        console.log('✅ تم إدخال الاسم');
       }
     } catch (e) {}
     
     await page.waitForTimeout(2000);
     
-    // إنشاء البوت مؤقتاً
     const botId = Date.now().toString();
     const transcripts = [];
     
@@ -288,50 +268,52 @@ app.post('/bot/create', async (req, res) => {
       meetingUrl: meeting_url,
       botName: bot_name,
       status: 'joining',
-      screenshot: null,
-      confirmedByUser: null
+      aiAnalysis: null,
+      createdAt: new Date().toISOString()
     });
     
-    // 🔥 الهجوم الشامل!
-    const result = await bruteForceJoin(page, bot_name, botId, 40);
+    // 🚪 محاولة الدخول
+    const joined = await attemptJoin(page, 25);
     
-    const bot = activeBots.get(botId);
-    
-    if (!result.success) {
-      console.log('❌ فشل الدخول بعد كل المحاولات');
-      bot.status = 'failed';
-      bot.screenshot = result.screenshot;
+    if (!joined) {
+      console.log('❌ فشل الدخول');
+      const screenshot = await takeScreenshot(page);
+      
+      activeBots.get(botId).status = 'failed';
+      activeBots.get(botId).screenshot = screenshot;
       
       return res.status(200).json({ 
         success: false,
         bot_id: botId,
-        status: 'failed',
-        message: 'فشل الدخول التلقائي - تحقق من الصفحة يدوياً',
-        screenshot: result.screenshot,
-        confirmation_url: `/bot/${botId}/confirm`
+        message: 'فشل الدخول - قد يحتاج قبول يدوي من المضيف',
+        screenshot: screenshot,
+        url: page.url()
       });
     }
     
-    console.log('🎉 نجح الدخول (نظرياً)! انتظر التأكيد اليدوي...');
+    console.log('🎉 دخل بنجاح! بدء التسجيل الذكي...');
+    activeBots.get(botId).status = 'recording';
+    activeBots.get(botId).joinedAt = new Date().toISOString();
     
-    // التقاط النصوص
+    // 💬 التقاط النصوص
     await page.exposeFunction('saveTranscript', (text) => {
-      if (text && text.length > 2) {
-        bot.transcripts.push({
-          text: text,
-          time: new Date().toLocaleString('ar-SA')
+      const bot = activeBots.get(botId);
+      if (bot && text && text.length > 2 && text.length < 1000) {
+        bot.transcripts.push({ 
+          text: text.trim(), 
+          time: new Date().toISOString() 
         });
-        console.log(`💬 [${bot.transcripts.length}]: ${text}`);
+        console.log(`💬 [${bot.transcripts.length}]: ${text.substring(0, 60)}...`);
       }
     });
     
     await page.evaluate(() => {
-      const observer = new MutationObserver((mutations) => {
-        mutations.forEach((m) => {
-          m.addedNodes.forEach((node) => {
-            if (node.nodeType === 1) {
-              const txt = node.innerText?.trim();
-              if (txt && txt.length > 5 && txt.length < 500) {
+      const observer = new MutationObserver(mutations => {
+        mutations.forEach(m => {
+          m.addedNodes.forEach(node => {
+            if (node.nodeType === 1 && node.innerText) {
+              const txt = node.innerText.trim();
+              if (txt.length > 5 && txt.length < 500) {
                 window.saveTranscript(txt);
               }
             }
@@ -344,95 +326,137 @@ app.post('/bot/create', async (req, res) => {
     res.status(201).json({ 
       success: true,
       bot_id: botId,
-      status: 'waiting_confirmation',
-      message: '✅ البوت يعتقد إنه دخل - راجع السكرينشوت وأكّد!',
-      screenshot: result.screenshot,
-      confirmation_url: `/bot/${botId}/confirm`,
-      check_url: `/bot/${botId}/status`
+      message: '✅ AI Agent دخل ويسجل الآن!',
+      features: {
+        recording: true,
+        aiAnalysis: !!genAI
+      }
     });
     
   } catch (error) {
     console.error('❌ خطأ عام:', error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: error.message, stack: error.stack });
   }
 });
 
-// ✅ API للتأكيد اليدوي
-app.post('/bot/:id/confirm', async (req, res) => {
-  const { actually_joined } = req.body; // true or false
+// 🧠 تحليل بالذكاء الاصطناعي
+app.post('/bot/:id/analyze', async (req, res) => {
   const bot = activeBots.get(req.params.id);
   
   if (!bot) {
     return res.status(404).json({ error: 'البوت غير موجود' });
   }
   
-  bot.confirmedByUser = actually_joined;
-  
-  if (actually_joined === true) {
-    bot.status = 'recording';
-    console.log(`✅ المستخدم أكّد: البوت ${req.params.id} دخل فعلاً!`);
-    res.json({ message: 'تم التأكيد - البوت يسجل الآن!' });
-  } else {
-    bot.status = 'failed_confirmed';
-    console.log(`❌ المستخدم أكّد: البوت ${req.params.id} ما دخل`);
-    await bot.browser.close();
-    activeBots.delete(req.params.id);
-    res.json({ message: 'تم الإلغاء - البوت فشل فعلاً' });
+  if (bot.transcripts.length === 0) {
+    return res.status(400).json({ error: 'لا توجد نصوص بعد - انتظر قليلاً!' });
   }
-});
-
-// 📊 API لمعرفة حالة البوت
-app.get('/bot/:id/status', async (req, res) => {
-  const bot = activeBots.get(req.params.id);
-  if (!bot) return res.status(404).json({ error: 'غير موجود' });
   
-  // خذ سكرينشوت جديد
-  const freshScreenshot = await takeScreenshot(bot.page, req.params.id);
+  console.log('🧠 بدء تحليل Gemini AI...');
+  console.log('📊 عدد النصوص:', bot.transcripts.length);
+  
+  const analysis = await analyzeWithGemini(bot.transcripts);
+  
+  if (analysis) {
+    bot.aiAnalysis = analysis;
+    bot.aiAnalysis.analyzedAt = new Date().toISOString();
+    console.log('✅ تم التحليل بنجاح!');
+  }
   
   res.json({
+    success: !!analysis,
     bot_id: req.params.id,
-    status: bot.status,
-    meeting_url: bot.meetingUrl,
-    bot_name: bot.botName,
     transcripts_count: bot.transcripts.length,
-    confirmed_by_user: bot.confirmedByUser,
-    screenshot: freshScreenshot || bot.screenshot,
-    current_url: bot.page.url()
+    analysis: analysis || { error: 'فشل التحليل' }
   });
 });
 
+// 📊 جلب النصوص والتحليل
 app.get('/bot/:id/transcripts', (req, res) => {
   const bot = activeBots.get(req.params.id);
-  if (!bot) return res.status(404).json({ error: 'البوت غير موجود' });
+  
+  if (!bot) {
+    return res.status(404).json({ error: 'البوت غير موجود' });
+  }
+  
   res.json({ 
     bot_id: req.params.id,
+    status: bot.status,
     transcripts: bot.transcripts, 
     count: bot.transcripts.length,
-    status: bot.status
+    aiAnalysis: bot.aiAnalysis,
+    meetingUrl: bot.meetingUrl,
+    createdAt: bot.createdAt,
+    joinedAt: bot.joinedAt || null
   });
 });
 
+// 🍪 تحديث Cookies (اختياري)
+app.post('/auth/cookies', (req, res) => {
+  const { cookies } = req.body;
+  
+  if (!cookies || !Array.isArray(cookies)) {
+    return res.status(400).json({ error: 'cookies يجب أن تكون array' });
+  }
+  
+  savedCookies = cookies;
+  console.log('✅ تم تحديث الـ Cookies:', cookies.length);
+  
+  res.json({ 
+    success: true, 
+    count: cookies.length,
+    message: 'سيتم استخدامها في البوتات القادمة (يفضل إعادة تشغيل السيرفر)'
+  });
+});
+
+// ❌ حذف البوت
 app.delete('/bot/:id', async (req, res) => {
   const bot = activeBots.get(req.params.id);
+  
   if (bot) {
-    await bot.browser.close();
+    try {
+      await bot.browser.close();
+    } catch (e) {
+      console.error('⚠️ خطأ في إغلاق المتصفح:', e.message);
+    }
+    
     activeBots.delete(req.params.id);
-    res.json({ message: 'تم إيقاف البوت', transcripts: bot.transcripts.length });
+    
+    console.log(`🗑️ تم حذف البوت: ${req.params.id}`);
+    
+    res.json({ 
+      success: true,
+      message: 'تم إيقاف البوت',
+      finalStats: {
+        transcripts: bot.transcripts.length,
+        aiAnalysis: bot.aiAnalysis
+      }
+    });
   } else {
-    res.status(404).json({ error: 'غير موجود' });
+    res.status(404).json({ error: 'البوت غير موجود' });
   }
 });
 
+// 📋 قائمة البوتات
 app.get('/bots', (req, res) => {
   const bots = Array.from(activeBots.values()).map(b => ({
     id: b.id,
-    meeting_url: b.meetingUrl,
     status: b.status,
+    meeting_url: b.meetingUrl,
     transcripts_count: b.transcripts.length,
-    confirmed: b.confirmedByUser
+    has_analysis: !!b.aiAnalysis,
+    created_at: b.createdAt,
+    joined_at: b.joinedAt || null
   }));
+  
   res.json({ total: bots.length, bots });
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => console.log('🚀🔥 البوت المحسّن جاهز على بورت:', PORT));
+app.listen(PORT, () => {
+  console.log('\n🚀🧠 ═══════════════════════════════');
+  console.log('🚀 AI Agent Bot جاهز!');
+  console.log('🌐 Port:', PORT);
+  console.log('🍪 Cookies:', savedCookies ? `${savedCookies.length} loaded ✅` : 'Not loaded ❌');
+  console.log('🧠 Gemini AI:', genAI ? 'Ready ✅' : 'Disabled ⚠️');
+  console.log('🚀🧠 ═══════════════════════════════\n');
+});
