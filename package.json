@@ -1,19 +1,19 @@
 {
   "name": "bahiq-meet-bot",
-  "version": "1.0.0",
-  "description": "بوت بهيج لتسجيل نصوص اجتماعات Google Meet",
+  "version": "6.0.0",
+  "description": "AI Agent Bot for Google Meet with Gemini",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "postinstall": "echo 'Skipping Chromium download'"
+    "start": "node index.js"
   },
   "dependencies": {
-    "puppeteer-core": "21.11.0",
-    "express": "4.19.2",
-    "cors": "2.8.5",
-    "@sparticuz/chromium": "119.0.0"
+    "puppeteer-core": "^22.0.0",
+    "@sparticuz/chromium": "^123.0.1",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "@google/generative-ai": "^0.21.0"
   },
   "engines": {
-    "node": "18.x"
+    "node": ">=18.0.0"
   }
 }
