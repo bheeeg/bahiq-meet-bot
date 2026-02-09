@@ -4,12 +4,14 @@
   "description": "بوت بهيج لتسجيل نصوص اجتماعات Google Meet",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "postinstall": "echo 'Skipping Chromium download'"
   },
   "dependencies": {
-    "puppeteer": "21.11.0",
+    "puppeteer-core": "21.11.0",
     "express": "4.19.2",
-    "cors": "2.8.5"
+    "cors": "2.8.5",
+    "@sparticuz/chromium": "119.0.0"
   },
   "engines": {
     "node": "18.x"
