@@ -1,0 +1,17 @@
+{
+  "name": "bahiq-meet-bot",
+  "version": "1.0.0",
+  "description": "بوت بهيج لتسجيل نصوص اجتماعات Google Meet",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "puppeteer": "21.11.0",
+    "express": "4.19.2",
+    "cors": "2.8.5"
+  },
+  "engines": {
+    "node": "18.x"
+  }
+}
