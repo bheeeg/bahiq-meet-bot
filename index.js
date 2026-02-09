@@ -34,7 +34,6 @@ app.post('/bot/create', async (req, res) => {
     console.log('📍 الرابط:', meeting_url);
     console.log('👤 الاسم:', bot_name);
     
-    // هنا الإصلاح: chromium.executablePath بدون await
     const execPath = await chromium.executablePath();
     
     const browser = await puppeteer.launch({
@@ -44,7 +43,8 @@ app.post('/bot/create', async (req, res) => {
         '--disable-dev-shm-usage',
         '--disable-blink-features=AutomationControlled',
         '--use-fake-ui-for-media-stream',
-        '--use-fake-device-for-media-stream'
+        '--use-fake-device-for-media-stream',
+        '--disable-notifications'
       ]),
       defaultViewport: chromium.defaultViewport,
       executablePath: execPath,
@@ -58,92 +58,173 @@ app.post('/bot/create', async (req, res) => {
     
     console.log('🌐 الدخول للاجتماع...');
     await page.goto(meeting_url, { 
-      waitUntil: 'networkidle2',
+      waitUntil: 'networkidle0',
       timeout: 60000 
     });
     
-    await page.waitForTimeout(3000);
+    await page.waitForTimeout(5000);
     
+    // إدخال الاسم - محاولات متعددة
     try {
-      const nameInput = await page.$('input[placeholder*="name" i], input[placeholder*="اسم" i]');
-      if (nameInput) {
-        await nameInput.click();
-        await nameInput.type(bot_name);
-        console.log('✅ تم إدخال الاسم');
+      console.log('✍️ محاولة إدخال الاسم...');
+      
+      const nameInputSelectors = [
+        'input[placeholder*="name" i]',
+        'input[placeholder*="اسم" i]',
+        'input[aria-label*="name" i]',
+        'input[type="text"]',
+        'input.VfPpkd-fmcmS-wGMYI'
+      ];
+      
+      let nameEntered = false;
+      for (const selector of nameInputSelectors) {
+        try {
+          const input = await page.$(selector);
+          if (input) {
+            await input.click({ clickCount: 3 });
+            await page.waitForTimeout(500);
+            await input.type(bot_name, { delay: 100 });
+            console.log('✅ تم إدخال الاسم بنجاح');
+            nameEntered = true;
+            break;
+          }
+        } catch (e) {
+          console.log(`⚠️ محاولة ${selector} فشلت`);
+        }
       }
+      
+      if (!nameEntered) {
+        console.log('⚠️ لم يتم العثور على حقل الاسم - متابعة...');
+      }
+      
     } catch (e) {
-      console.log('⚠️ لم يتم العثور على حقل الاسم');
+      console.log('⚠️ خطأ في إدخال الاسم:', e.message);
     }
     
+    await page.waitForTimeout(3000);
+    
+    // إيقاف الكاميرا والمايك - طريقة محدثة
     try {
-      await page.waitForTimeout(2000);
+      console.log('🎥 محاولة إيقاف الكاميرا والمايك...');
       
+      // البحث عن جميع الأزرار
       const buttons = await page.$$('div[role="button"], button');
       
       for (const button of buttons) {
-        const ariaLabel = await button.evaluate(el => el.getAttribute('aria-label') || el.getAttribute('data-tooltip') || '');
-        
-        if (ariaLabel.match(/camera|كاميرا|turn off|إيقاف/i)) {
-          await button.click();
-          console.log('📷 تم إيقاف الكاميرا');
-          await page.waitForTimeout(500);
-        }
-        
-        if (ariaLabel.match(/microphone|ميكروفون|mute|كتم/i)) {
-          await button.click();
-          console.log('🎤 تم كتم المايك');
-          await page.waitForTimeout(500);
-        }
+        try {
+          const ariaLabel = await button.evaluate(el => 
+            (el.getAttribute('aria-label') || '').toLowerCase()
+          );
+          
+          const dataTooltip = await button.evaluate(el => 
+            (el.getAttribute('data-tooltip') || '').toLowerCase()
+          );
+          
+          const allText = ariaLabel + ' ' + dataTooltip;
+          
+          // إيقاف الكاميرا
+          if (allText.includes('camera') || allText.includes('cam') || 
+              allText.includes('video') || allText.includes('turn off')) {
+            await button.click();
+            console.log('📷 تم إيقاف الكاميرا');
+            await page.waitForTimeout(1000);
+          }
+          
+          // كتم المايك
+          if (allText.includes('mic') || allText.includes('mute') || 
+              allText.includes('audio')) {
+            await button.click();
+            console.log('🎤 تم كتم المايك');
+            await page.waitForTimeout(1000);
+          }
+        } catch (e) {}
       }
+      
     } catch (e) {
-      console.log('⚠️ لم يتم العثور على أزرار الكاميرا/المايك');
+      console.log('⚠️ لم يتم إيقاف الكاميرا/المايك:', e.message);
     }
     
+    await page.waitForTimeout(3000);
+    
+    // الدخول للاجتماع - محاولات متعددة
     try {
-      await page.waitForTimeout(2000);
-      
-      const joinSelectors = [
-        'button:has-text("Join now")',
-        'button:has-text("Ask to join")',
-        'span:has-text("Join")',
-        'span:has-text("الانضمام")',
-        'div[aria-label*="Join" i]'
-      ];
+      console.log('🚪 محاولة الدخول للاجتماع...');
       
       let joined = false;
-      for (const selector of joinSelectors) {
+      
+      // الطريقة 1: البحث بالنص المباشر
+      const joinTexts = ['Join now', 'Ask to join', 'الانضمام الآن', 'طلب الانضمام'];
+      
+      for (const text of joinTexts) {
         try {
-          const element = await page.$(selector);
-          if (element) {
-            await element.click();
-            console.log('✅ تم النقر على زر الانضمام');
+          const [button] = await page.$x(`//span[contains(text(), '${text}')]`);
+          if (button) {
+            await button.click();
+            console.log(`✅ تم النقر على: ${text}`);
             joined = true;
             break;
           }
         } catch (e) {}
       }
       
+      // الطريقة 2: البحث بالـ Selector
       if (!joined) {
-        const [button] = await page.$x("//span[contains(text(), 'Join') or contains(text(), 'الانضمام')]");
-        if (button) {
-          await button.click();
-          console.log('✅ تم الانضمام عبر XPath');
+        const joinSelectors = [
+          'button[data-tooltip*="Join"]',
+          'button[aria-label*="Join"]',
+          'div[role="button"][aria-label*="Join"]',
+          'span.VfPpkd-vQzf8d:has-text("Join")'
+        ];
+        
+        for (const selector of joinSelectors) {
+          try {
+            const button = await page.$(selector);
+            if (button) {
+              await button.click();
+              console.log('✅ تم الدخول للاجتماع');
+              joined = true;
+              break;
+            }
+          } catch (e) {}
         }
       }
+      
+      // الطريقة 3: الضغط على أي زر كبير (Last resort)
+      if (!joined) {
+        const allButtons = await page.$$('button, div[role="button"]');
+        for (const btn of allButtons) {
+          try {
+            const text = await btn.evaluate(el => el.textContent);
+            if (text && (text.includes('Join') || text.includes('join') || text.includes('انضمام'))) {
+              await btn.click();
+              console.log('✅ تم الدخول (طريقة بديلة)');
+              joined = true;
+              break;
+            }
+          } catch (e) {}
+        }
+      }
+      
+      if (!joined) {
+        console.log('⚠️ لم يتم العثور على زر الدخول - قد يكون البوت دخل تلقائياً');
+      }
+      
     } catch (e) {
-      console.log('⚠️ لم يتم العثور على زر الانضمام');
+      console.log('⚠️ خطأ في الدخول:', e.message);
     }
     
-    await page.waitForTimeout(5000);
+    await page.waitForTimeout(8000);
     
+    // تفعيل الترجمة/النصوص
     try {
-      await page.waitForTimeout(2000);
+      console.log('💬 محاولة تفعيل الترجمة...');
       
       const captionSelectors = [
         'button[aria-label*="captions" i]',
         'button[aria-label*="subtitles" i]',
-        'div[aria-label*="captions" i]',
-        'button[data-tooltip*="captions" i]'
+        'button[aria-label*="transcript" i]',
+        'button[data-tooltip*="captions" i]',
+        'div[aria-label*="captions" i][role="button"]'
       ];
       
       for (const selector of captionSelectors) {
@@ -151,19 +232,23 @@ app.post('/bot/create', async (req, res) => {
           const button = await page.$(selector);
           if (button) {
             await button.click();
-            console.log('✅ تم تفعيل الشرح التلقائي');
+            console.log('✅ تم تفعيل النصوص');
             break;
           }
         } catch (e) {}
       }
+      
     } catch (e) {
-      console.log('⚠️ لم يتم تفعيل الشرح (قد لا يكون متاحاً)');
+      console.log('⚠️ الترجمة غير متاحة');
     }
     
+    await page.waitForTimeout(3000);
+    
+    // التقاط النصوص
     const transcripts = [];
     
     await page.exposeFunction('saveTranscript', (text, timestamp) => {
-      if (text && text.length > 0) {
+      if (text && text.length > 2) {
         transcripts.push({
           text: text,
           timestamp: new Date(timestamp).toISOString(),
@@ -183,7 +268,7 @@ app.post('/bot/create', async (req, res) => {
               if (text && 
                   text.length > 2 && 
                   !text.includes('Turn on captions') &&
-                  !text.includes('تفعيل الشرح') &&
+                  !text.includes('تفعيل') &&
                   !text.match(/^\d+:\d+$/)) {
                 window.saveTranscript(text, Date.now());
               }
@@ -225,6 +310,7 @@ app.post('/bot/create', async (req, res) => {
     
   } catch (error) {
     console.error('❌ خطأ:', error.message);
+    console.error('Stack:', error.stack);
     res.status(500).json({ 
       error: error.message,
       tip: 'تأكد من صحة رابط الاجتماع'
