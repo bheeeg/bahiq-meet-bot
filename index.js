@@ -10,6 +10,11 @@ app.use(express.json({ limit: '50mb' }));
 
 const activeBots = new Map();
 
+// 🛠️ Helper: sleep function
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 // 🧠 Gemini AI
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 let genAI = null;
@@ -27,8 +32,34 @@ const BOT_COOKIES = process.env.BOT_COOKIES;
 
 if (BOT_COOKIES) {
   try {
-    savedCookies = JSON.parse(BOT_COOKIES);
-    console.log('✅ تم تحميل', savedCookies.length, 'cookie من Environment');
+    const rawCookies = JSON.parse(BOT_COOKIES);
+    
+    // تنظيف الـ Cookies
+    savedCookies = rawCookies.map(cookie => {
+      let sameSite = cookie.sameSite || 'Lax';
+      
+      if (sameSite && typeof sameSite === 'string') {
+        sameSite = sameSite.charAt(0).toUpperCase() + sameSite.slice(1).toLowerCase();
+      }
+      
+      if (!['Lax', 'Strict', 'None'].includes(sameSite)) {
+        sameSite = 'Lax';
+      }
+      
+      return {
+        name: cookie.name,
+        value: cookie.value,
+        domain: cookie.domain || '.google.com',
+        path: cookie.path || '/',
+        expires: cookie.expires || cookie.expirationDate || -1,
+        httpOnly: cookie.httpOnly === true,
+        secure: cookie.secure !== false,
+        sameSite: sameSite
+      };
+    });
+    
+    console.log('✅ تم تحميل وتنظيف', savedCookies.length, 'cookie');
+    
   } catch (e) {
     console.error('❌ فشل تحميل Cookies:', e.message);
   }
@@ -39,7 +70,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'running',
     service: '🤖 Bahiq AI Agent - Meet Bot',
-    version: '6.0.0',
+    version: '6.0.1',
     activeBots: activeBots.size,
     features: {
       hasCookies: !!savedCookies,
@@ -82,7 +113,6 @@ ${allText}
     const result = await model.generateContent(prompt);
     const response = result.response.text();
     
-    // استخراج JSON
     const jsonMatch = response.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       return JSON.parse(jsonMatch[0]);
@@ -134,17 +164,15 @@ async function attemptJoin(page, maxAttempts = 25) {
     }
     
     try {
-      // محاولة 1: ابحث عن "Join now"
       const joinButtons = await page.$x("//span[contains(., 'Join now') or contains(., 'انضم الآن') or contains(., 'Join') or contains(., 'انضم')]");
       
       if (joinButtons.length > 0) {
         console.log('✅ وجدت زر الانضمام');
         await joinButtons[0].click();
-        await page.waitForTimeout(4000);
+        await sleep(4000);
         continue;
       }
       
-      // محاولة 2: أي button فيه كلمة join
       const allButtons = await page.$$('button, div[role="button"], span[role="button"]');
       
       for (let i = 0; i < Math.min(allButtons.length, 15); i++) {
@@ -154,23 +182,22 @@ async function attemptJoin(page, maxAttempts = 25) {
         if ((text.includes('join') || text.includes('انضم')) && text.length < 50) {
           console.log(`🎯 محاولة: "${text.substring(0, 30)}"`);
           await btn.click();
-          await page.waitForTimeout(3000);
+          await sleep(3000);
           break;
         }
       }
       
-      // محاولة 3: Enter
       if (attempt % 6 === 0) {
         console.log('⌨️ محاولة Enter...');
         await page.keyboard.press('Enter');
-        await page.waitForTimeout(2000);
+        await sleep(2000);
       }
       
     } catch (e) {
       console.log(`⚠️ خطأ: ${e.message}`);
     }
     
-    await page.waitForTimeout(2500);
+    await sleep(2500);
   }
   
   console.log('❌ فشلت كل المحاولات');
@@ -237,15 +264,13 @@ app.post('/bot/create', async (req, res) => {
     const context = browser.defaultBrowserContext();
     await context.overridePermissions(meeting_url, ['microphone', 'camera']);
     
-    // 🍪 تحميل Session
     console.log('🍪 تحميل session...');
     await page.setCookie(...savedCookies);
     
     console.log('🌐 الدخول للصفحة...');
     await page.goto(meeting_url, { waitUntil: 'networkidle2', timeout: 60000 });
-    await page.waitForTimeout(5000);
+    await sleep(5000);
     
-    // محاولة إدخال الاسم (لو طُلب)
     try {
       const nameInput = await page.$('input[type="text"]');
       if (nameInput) {
@@ -255,7 +280,7 @@ app.post('/bot/create', async (req, res) => {
       }
     } catch (e) {}
     
-    await page.waitForTimeout(2000);
+    await sleep(2000);
     
     const botId = Date.now().toString();
     const transcripts = [];
@@ -272,7 +297,6 @@ app.post('/bot/create', async (req, res) => {
       createdAt: new Date().toISOString()
     });
     
-    // 🚪 محاولة الدخول
     const joined = await attemptJoin(page, 25);
     
     if (!joined) {
@@ -295,7 +319,6 @@ app.post('/bot/create', async (req, res) => {
     activeBots.get(botId).status = 'recording';
     activeBots.get(botId).joinedAt = new Date().toISOString();
     
-    // 💬 التقاط النصوص
     await page.exposeFunction('saveTranscript', (text) => {
       const bot = activeBots.get(botId);
       if (bot && text && text.length > 2 && text.length < 1000) {
@@ -390,7 +413,7 @@ app.get('/bot/:id/transcripts', (req, res) => {
   });
 });
 
-// 🍪 تحديث Cookies (اختياري)
+// 🍪 تحديث Cookies
 app.post('/auth/cookies', (req, res) => {
   const { cookies } = req.body;
   
@@ -404,7 +427,7 @@ app.post('/auth/cookies', (req, res) => {
   res.json({ 
     success: true, 
     count: cookies.length,
-    message: 'سيتم استخدامها في البوتات القادمة (يفضل إعادة تشغيل السيرفر)'
+    message: 'سيتم استخدامها في البوتات القادمة'
   });
 });
 
